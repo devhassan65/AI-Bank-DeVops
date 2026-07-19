@@ -36,7 +36,7 @@ spec:
               cpu: "100m"
       containers:
         - name: bankapp
-          image: trainwithshubham/bankapp:k8s
+          image: nasirbloch323/ai-bankapp-devops-nasir:v1
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
