@@ -2,325 +2,273 @@
 
 # DevSecOps Banking Application
 
-A high-performance, containerized financial platform built with Spring Boot 3, Java 21, and integrated Contextual AI. This project implements a secure "DevSecOps Pipeline" using GitHub Actions, OIDC authentication, and AWS managed services.
-
-[![Java Version](https://img.shields.io/badge/Java-21-blue.svg)](https://www.oracle.com/java/technologies/javase/jdk21-archive-downloads.html)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.4.1-brightgreen.svg)](https://spring.io/projects/spring-boot)
-[![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-orange.svg)](.github/workflows/devsecops.yml)
-[![AWS OIDC](https://img.shields.io/badge/Security-OIDC-red.svg)](#phase-3-security-and-identity-configuration)
+A containerized, AI-integrated banking platform built with Spring Boot 3 + Java 21, deployed on Kubernetes.
+This README explains the **full architecture and folder structure** in simple terms — written so a beginner can understand exactly what every piece does.
 
 </div>
 
-![dashboard](screenshots/1.png)
+---
+
+## 1. What Is This Project?
+
+This is a **bank application** with three moving parts working together:
+
+1. **BankApp** — the main Spring Boot application users interact with (banking features + an AI assistant).
+2. **MySQL** — the database that stores all banking data.
+3. **Ollama (TinyLlama)** — a local AI engine that powers the AI assistant feature inside the app.
+
+All three run as separate containers inside **Kubernetes**, talking to each other over the network — this is called a **microservices architecture**.
 
 ---
 
-## Technical Architecture
-
-The application is deployed across a multi-tier, segmented AWS environment. The control plane leverages GitHub Actions with integrated security gates at every stage.
+## 2. The Big Picture (How Everything Connects)
 
 ```mermaid
 graph TD
-    subgraph "External Control Plane"
-        GH[GitHub Actions]
-        User[User Browser]
-    end
+    User[User Browser] -->|Port 8080 / 30080| Gateway[bankapp-service]
+    Gateway --> App[bankapp Deployment<br/>2-4 replicas]
+    App -->|JDBC| MySQLSvc[mysql-service]
+    App -->|REST API| OllamaSvc[ollama-service]
+    MySQLSvc --> MySQLPod[mysql Deployment]
+    OllamaSvc --> OllamaPod[ollama Deployment]
+    MySQLPod --> MySQLDisk[(mysql-pvc storage)]
+    OllamaPod --> OllamaDisk[(ollama-pvc storage)]
+    Config[configmap + secrets] -.env vars.-> App
+    Config -.env vars.-> MySQLPod
+    HPA[HPA autoscaler] -.watches CPU.-> App
+```
 
-    subgraph "AWS Infrastructure (VPC)"
-        subgraph "Application Tier"
-            AppEC2[App EC2 - Ubuntu/Docker]
-            DB[(MySQL 8.0 Container)]
-        end
+**In plain words:**
+A user opens the app in a browser → the request hits `bankapp-service` → which forwards it to one of the `bankapp` Pods → the Pod talks to MySQL (for data) and Ollama (for AI replies) → all configuration (URLs, passwords) comes from `configmap` and `secrets` → an autoscaler (`HPA`) watches CPU usage and adds/removes app Pods automatically.
 
-        subgraph "Artificial Intelligence Tier"
-            Ollama[Ollama EC2 - AI Engine]
-        end
+---
 
-        subgraph "Identity & Secrets"
-            Secrets[AWS Secrets Manager]
-            OIDC[IAM OIDC Provider]
-        end
+## 3. Why One Namespace?
 
-        subgraph "Registry"
-            ECR[Amazon ECR]
-        end
-    end
+Everything (MySQL, Ollama, BankApp) lives inside **one namespace**: `bankapp`.
 
-    GH -->|1. OIDC Authentication| OIDC
-    GH -->|2. Push Scanned Image| ECR
-    GH -->|3. SSH Orchestration| AppEC2
-    GH -->|4. DAST Scan| AppEC2
-    
-    User -->|Port 8080| AppEC2
-    AppEC2 -->|JDBC Connection| DB
-    AppEC2 -->|REST Integration| Ollama
-    AppEC2 -->|Runtime Secrets| Secrets
-    AppEC2 -->|Pull Image| ECR
+A namespace is just a labeled "room" inside the cluster. Putting all three services in the same room means:
+- They can find each other by simple names (`mysql-service`, `ollama-service`) — no extra configuration needed.
+- It's easier to manage, view, and delete everything together (`kubectl get all -n bankapp`).
+
+Separate namespaces are only needed when isolating different **environments** (dev/staging/prod) or different **teams** — not for parts of the same app.
+
+---
+
+## 4. Folder Structure Explained
+
+```
+AI-Bank-DeVops/
+├── .github/workflows/     → CI/CD pipeline (GitHub Actions: build, scan, deploy)
+├── .mvn/wrapper/          → Maven wrapper files (build tool)
+├── k8s/                   → All Kubernetes manifests (the real deployment files)
+├── screenshots/           → Images used in documentation
+├── scripts/               → Helper shell scripts (e.g. Ollama setup on EC2)
+├── setup-k8s/             → Local Kind cluster setup files + guide
+├── src/                   → Java Spring Boot source code
+├── Dockerfile             → Instructions to build the app's container image
+├── docker-compose.yml     → Run everything locally with Docker (no Kubernetes)
+├── app-tier.yml           → App-tier config for AWS EC2 deployment (non-K8s)
+├── pom.xml                → Maven project + dependency definitions
+└── README.md              → This file
 ```
 
 ---
 
-## Security Pipeline (DevSecOps Pipeline)
+## 5. Kubernetes Files — One by One
 
-The CI/CD pipeline enforces **9 sequential security gates** before any code reaches production:
+Every file in `k8s/` has exactly one job. Apply order matters because some resources depend on others already existing.
 
-| Gate | Name | Tool | Purpose |
-| :---: | :--- | :--- | :--- |
-| 1 | Secret Scan | Gitleaks | Scans entire Git history for leaked secrets |
-| 2 | Lint | Checkstyle | Enforces Java Google-Style coding standards |
-| 3 | SAST | Semgrep | Scans Java source code for security flaws and OWASP Top 10 |
-| 4 | SCA | OWASP Dependency Check (first time run can take more than 30+ minutes) | Scans Maven dependencies for known CVEs |
-| 5 | Build | Maven | Compiles and packages the application |
-| 6 | Container Scan | Trivy | Scans the Docker image for OS and library vulnerabilities |
-| 7 | Push | Amazon ECR | Pushes the image only after Trivy passes |
-| 8 | Deploy | SSH / Docker Compose | Automated deployment to AWS EC2 |
-| 9 | DAST | OWASP ZAP | Dynamic attack surface scanning on live app |
+| # | File | What It Does | Depends On |
+|---|------|---------------|------------|
+| 1 | `namespace.yml` | Creates the `bankapp` room where everything else lives | Nothing |
+| 2 | `configmap.yml` | Stores non-secret settings (DB host, port, Ollama URL) | Namespace |
+| 3 | `secrets.yml` | Stores sensitive values (passwords) in base64 | Namespace |
+| 4 | `pv.yml` | Reserves physical disk space on the node (`PersistentVolume`) | Nothing |
+| 5 | `pvc.yml` | Claims that disk space for a specific app to use (`PersistentVolumeClaim`) | PV |
+| 6 | `mysql-deployment.yml` | Runs the MySQL 8.0 container, mounts storage, reads secrets | ConfigMap, Secret, PVC |
+| 7 | `ollama-deployment.yml` | Runs the Ollama AI engine, auto-pulls the `tinyllama` model on startup | PVC |
+| 8 | `bankapp-deployment.yml` | Runs 2 replicas of the main app; waits for MySQL + Ollama before starting | ConfigMap, Secret, MySQL & Ollama running |
+| 9 | `service.yml` | Creates 3 network "front doors": `mysql-service`, `ollama-service`, `bankapp-service` | Deployments |
+| 10 | `hpa.yml` | Auto-scales `bankapp` between 2–4 Pods based on CPU usage | Deployment + metrics-server |
+| 11 | `gateway.yml` | Optional advanced routing via Gateway API + Envoy (needs extra setup) | Service |
+| 12 | `pod.yml` | A standalone test Pod (not part of normal deployment flow) | — |
+| 13 | `dashboard-admin.yml` | Grants admin access to the Kubernetes Dashboard UI | Dashboard installed |
 
----
+### Why `bankapp-deployment.yml` waits before starting
 
-## Technology Stack
+It uses **initContainers** — small helper containers that run *before* the main app starts:
 
-- **Backend Framework**: Java 21, Spring Boot 3.4.1
-- **Security Strategy**: Spring Security, IAM OIDC, Secrets Manager
-- **Persistence Layer**: MySQL 8.0 (Docker Container)
-- **AI Integration**: Ollama (TinyLlama)
-- **DevOps Tooling**: Docker, Docker Compose, GitHub Actions, AWS CLI, jq
-- **Infrastructure**: Amazon EC2, Amazon ECR, Amazon VPC
+```yaml
+initContainers:
+  - name: wait-for-mysql
+    command: ["/bin/sh", "-c", "until nc -z mysql-service 3306; do sleep 2; done"]
+  - name: wait-for-ollama
+    command: ["/bin/sh", "-c", "until nc -z ollama-service 11434; do sleep 2; done"]
+```
 
----
-
-## Implementation Phases
-
-### Phase 1: AWS Infrastructure Initialization
-
-1. **Container Registry (ECR)**:
-
-   - Establish a private ECR repository named `devsecops-bankapp`.
-
-      ![ECR](screenshots/2.png)
-
-2. **Application Server (EC2)**:
-
-   - Deploy an Ubuntu 22.04 instance with below `User Data`.
-
-      ```bash
-      #!/bin/bash
-
-      sudo apt update 
-      sudo apt install -y docker.io docker-compose-v2 jq
-      sudo usermod -aG docker ubuntu
-      sudo newgrp docker
-      sudo snap install aws-cli --classic
-      ```
-
-   - Configure Security Group to open inbound rule for Port 22 (Management) and Port 8080 (Service).
-
-      > Better to give `name` to Security Group created.
-
-   - Create an IAM Instance Profile(IAM EC2 role) containing permissions:
-     - `AmazonEC2ContainerRegistryPowerUser`
-     - `AWSSecretsManagerClientReadOnlyAccess`
-
-        ![Permissions](screenshots/3.png)
-
-   - Attach it to Application EC2. Select EC2 -> Actions -> Security -> Modify IAM role -> Attach created IAM role.
-
-      ![IAM role](screenshots/4.png)
-   
-   - Connect to EC2 Instance and Run below command to check whether IAM role is working or not.
-
-      ```bash
-      aws sts get-caller-identity
-      ```
-
-      You will get your account details with IAM role assumed.
-
-3. **AI Engine Tier (Ollama)**:
-   - Deploy a dedicated Ubuntu EC2 instance.
-   - Open Inbound Port `11434` from the Application EC2 Security Group.
-
-      > Better to give `name` to Security Group created.
-    
-      ![ollama-sg](screenshots/8.png)
-
-   - Automate initialization using the [ollama-setup.sh](scripts/ollama-setup.sh) script via EC2 User Data.
-    
-      ![user-data](screenshots/9.png)
-
-   - Verify the AI engine is responsive and the model is pulled in `AI engine EC2`:
-
-     ```bash
-     ollama list
-     ```
-
-      ![ollama-list](screenshots/21.png)
+This means: *"Don't start the bank app until MySQL and Ollama are actually reachable."* This prevents crash loops caused by the app trying to connect to a database that isn't ready yet.
 
 ---
 
-### Phase 2: Security and Identity Configuration
+## 6. Networking — How Services Talk
 
-The deployment pipeline utilizes OpenID Connect (OIDC) for secure, keyless authentication between GitHub and AWS.
+| Service | Type | Port | Who Uses It |
+|---------|------|------|--------------|
+| `mysql-service` | ClusterIP (internal only) | 3306 | `bankapp` Pods only |
+| `ollama-service` | ClusterIP (internal only) | 11434 | `bankapp` Pods only |
+| `bankapp-service` | **NodePort** (external) | 8080 → 30080 | End users, browsers |
 
-1. **IAM Identity Provider**:
-   - Provider URL: `https://token.actions.githubusercontent.com`
-   - Audience: `sts.amazonaws.com`
-
-      ![identity-provider](screenshots/10.png)
-
-2. **Deployment Role**:
-   - Click on created `Identity provider`
-   - Asign & Create a role named `GitHubActionsRole`.
-   - Enter following details:
-      - `Identity provider`: Select created one.
-      - `Audience`: Select created one.
-      - `GitHub organization`: Your GitHub Username or Orgs Name where this repo is located.
-      - `GitHub repository`: Write the Repository name of this project. `(e.g, DevSecOps-Bankapp)`
-      - `GitHub branch`: branch to use for this project `(e.g, devsecops)`
-      - Click on `Next`
-
-      ![role](screenshots/11.png)
-
-   - Assign `AmazonEC2ContainerRegistryPowerUser` permissions.
-
-      ![iam permission](screenshots/12.png)
-
-   - Click on `Next`, Enter name of role and click on `Create role`.
-
-      ![iam role](screenshots/13.png)
+`bankapp-service` also uses:
+```yaml
+sessionAffinity: ClientIP
+```
+This means the **same user always lands on the same Pod** for their whole session (up to 1 hour of inactivity) — important for a banking app where session data shouldn't jump between replicas.
 
 ---
 
-### Phase 3: Secrets and Pipeline Configuration
+## 7. Local Development with Kind
 
-#### 1. AWS Secrets Manager
-Create a secret named `bankapp/prod-secrets` in `Other type of secret` with the following key-value pairs:
+For running this entire stack on your own laptop (no AWS needed), the project uses **Kind** (Kubernetes-in-Docker).
 
-| Secret Key | Description | Sample/Default Value |
-| :--- | :--- | :--- |
-| `DB_HOST` | The MySQL container service name | `db` |
-| `DB_PORT` | The database port | `3306` |
-| `DB_NAME` | The application database name | `bankappdb` |
-| `DB_USER` | The database username | `bankuser` |
-| `DB_PASSWORD` | The database password | `Test@123` |
-| `OLLAMA_URL` | The private URL for the AI tier | `http://<PRIVATE-IP>:11434` |
+**`setup-k8s/kind-config.yml`** creates a 3-node local cluster:
 
-![aws-ssm](screenshots/14.png)
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: tws-cluster
 
-#### 2. GitHub Repository Secrets
-Configure the following Action Secrets within your GitHub repository settings:
+nodes:
+- role: control-plane
+  image: kindest/node:v1.35.0
+  extraPortMappings:
+    - containerPort: 30080
+      hostPort: 8080
+      protocol: TCP
+- role: worker
+  image: kindest/node:v1.35.0
+- role: worker
+  image: kindest/node:v1.35.0
+```
 
-| Secret Name | Description |
-| :--- | :--- |
-| `AWS_ROLE_ARN` | The ARN of the `GitHubActionsRole` |
-| `AWS_REGION` | The AWS region where resources are deployed |
-| `AWS_ACCOUNT_ID` | Your 12-digit AWS account number |
-| `ECR_REPOSITORY` | The name of the ECR repository (`devsecops-bankapp`) |
-| `EC2_HOST` | The public IP address of the Application EC2 |
-| `EC2_USER` | The SSH username (default is `ubuntu`) |
-| `EC2_SSH_KEY` | The content of your private SSH key (`.pem` file) |
-| `NVD_API_KEY` | Free API key from [nvd.nist.gov](https://nvd.nist.gov/developers/request-an-api-key) for OWASP SCA scans |
-
-> **Note**: The `NVD_API_KEY` raises the NVD API rate limit from ~5 requests/30s to 50 requests/30s, reducing the OWASP Dependency Check scan time from 30+ minutes to under 8 minutes. Without it the SCA job will time out.
-
-#### Obtaining the NVD API Key
-
-**Step 1: Request the API Key**
-- Go to [https://nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key).
-- Enter your `Organzation name`, `email address`, and select `organization type`.
-- Accept **Terms of Use** and Click **Submit**.
-
-   ![request](screenshots/22.png)
-
-**Step 2: Activate the API Key**
-- Check your email inbox for a message from `nvd-noreply@nist.gov`.
-
-   ![email](screenshots/25.png)
-
-- Click the **activation link** in the email.
-- Enter `UUID` provided in email and Enter `Email` to activate
-- The link confirms your key and marks it as active.  
-
-   ![api-activate](screenshots/23.png)
-
-**Step 3: Get the API Key**
-- After clicking the activation link, the page will generate your API key.
-- Copy and save it securely.
-
-   ![api-key](screenshots/24.png)
-
-**Step 4: Add as GitHub Secret**
-- Go to your repository on GitHub.
-- Navigate to **Settings** → **Secrets and variables** → **Actions** → **New repository secret**.
-- Name: `NVD_API_KEY`
-- Value: Paste the copied API key.
-- Click **Add Secret**.
-
-![github-secret](screenshots/15.png)
+- **1 control-plane + 2 workers** → mimics a real multi-node cluster.
+- **`extraPortMappings`** → maps the app's internal NodePort (`30080`) to your laptop's `localhost:8080`. This is why, once deployed, you open the app at `http://localhost:8080` instead of needing `kubectl port-forward`.
 
 ---
 
-## Continuous Integration and Deployment
+## 8. Complete Setup — Step by Step
 
-The DevSecOps lifecycle is orchestrated through the [DevSecOps Main Pipeline](.github/workflows/devsecops-main.yml), which securely sequences three modular workflows: [CI](.github/workflows/ci.yml), [Build](.github/workflows/build.yml), and [CD](.github/workflows/cd.yml). Together they enforce **9 sequential security gates** before any code reaches production. Every `git push` to the `main` or `devsecops` branch triggers the full pipeline automatically.
+```bash
+# ── 1. Build the app image ──────────────────────────────
+docker build -t trainwithshubham/bankapp:k8s .
 
-| Gate | Job | Tool | Action |
-| :---: | :--- | :--- | :--- |
-| 1 | `gitleaks` | Gitleaks | **Strict**: Fails if any secrets are found in history. |
-| 2 | `lint` | Checkstyle | **Audit**: Reports style violations but doesn't block (Google Style). |
-| 3 | `sast` | Semgrep | **Strict**: Scans code for vulnerabilities. Fails on findings. |
-| 4 | `sca` | OWASP Dependency Check | **Strict**: Fails if any dependency has CVSS > 7.0. |
-| 5 | `build` | Maven | Standard build and test stage. |
-| 6 | `image_scan` | Trivy | **Strict**: Scans Docker image layers. Fails on any High/Critical CVE. |
-| 7 | `push_to_ecr` | Amazon ECR | Pushes the verified image to AWS ECR using OIDC. |
-| 8 | `deploy` | SSH / Docker Compose | Fetches secrets from AWS Secrets Manager and recreates the container. |
-| 9 | `dast` | OWASP ZAP | **Audit Mode**: Comprehensive scan that reports findings as artifacts, but does not block the pipeline. |
+# ── 2. Create the local Kind cluster ────────────────────
+kind create cluster --config setup-k8s/kind-config.yml
 
-All scan reports (OWASP, Trivy, ZAP) are uploaded as downloadable **Artifacts** in each GitHub Actions run, YOu can look into the **Artifacts**.
+# ── 3. Load the image into the cluster ──────────────────
+# (Kind can't see your local Docker images automatically)
+kind load docker-image trainwithshubham/bankapp:k8s --name tws-cluster
 
-- CI/CD
+# ── 4. Install metrics-server (required for autoscaling) ─
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch deployment metrics-server -n kube-system \
+  --type='json' \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
 
-   ![github-actions](screenshots/16.png)
+# ── 5. Apply all manifests in dependency order ──────────
+kubectl apply -f k8s/namespace.yml
+kubectl apply -f k8s/configmap.yml
+kubectl apply -f k8s/secrets.yml
+kubectl apply -f k8s/pv.yml
+kubectl apply -f k8s/pvc.yml
+kubectl apply -f k8s/mysql-deployment.yml
+kubectl apply -f k8s/ollama-deployment.yml
+kubectl apply -f k8s/bankapp-deployment.yml
+kubectl apply -f k8s/service.yml
+kubectl apply -f k8s/hpa.yml
 
-- Artifacts
+# ── 6. Verify everything is running ─────────────────────
+kubectl get all -n bankapp
+```
 
-   ![artifacts](screenshots/26.png)
-   
+Once every Pod shows `Running` / `1/1 Ready`, open:
+
+```
+http://localhost:8080
+```
+
+No `kubectl port-forward` is needed — the Kind cluster already mapped the port for you.
+
 ---
 
-## Operational Verification
+## 9. Useful Commands Cheat Sheet
 
-- **Process Status**: `docker ps`
+| Goal | Command |
+|------|---------|
+| See all resources | `kubectl get all -n bankapp` |
+| See Pod details / errors | `kubectl describe pod <pod-name> -n bankapp` |
+| See container logs | `kubectl logs <pod-name> -n bankapp` |
+| Check autoscaler status | `kubectl get hpa -n bankapp -w` |
+| Check live CPU/memory | `kubectl top pods -n bankapp` |
+| Delete everything | `kubectl delete namespace bankapp` |
+| Manual traffic forward (only if NodePort isn't mapped) | `kubectl port-forward svc/bankapp-service 8080:8080 -n bankapp` |
 
-  ![docker ps](screenshots/19.png)
+---
 
-- **Application Working**:
+## 10. Testing Autoscaling (HPA)
 
-  ![app](screenshots/20.png)
+Generate fake load to watch replicas scale up automatically:
 
-- **Database Connectivity**: 
+```bash
+kubectl run load-test --image=busybox:1.36 -n bankapp -- \
+  sh -c "while true; do wget -q -O- http://bankapp-service:8080/actuator/health >/dev/null 2>&1; done"
 
-  ```bash
-  docker exec -it db mysql -u <USER> -p bankappdb -e "SELECT * FROM accounts;"
-  ```
+kubectl get hpa -n bankapp -w
+```
 
-  ![mysql-result](screenshots/17.png)
+Replicas will grow from **2 → 4** within 1–2 minutes as CPU usage crosses 70%. Clean up afterwards:
 
-  > **ZAP** is automatically created by **DAST - OWASP ZAP Baseline Scan** job in [cd.yml](.github/workflows/cd.yml). Read more about it(How, Why it does) on google...
+```bash
+kubectl delete pod load-test -n bankapp
+```
 
-- **Network Validation**: 
+Scale-down happens automatically after 5 minutes of low CPU.
 
-  ```bash
-  nc -zv <OLLAMA-PRIVATE-IP> 11434
-  ```
+---
 
-  ![ollama-success](screenshots/18.png)
+## 11. Production Deployment (AWS)
+
+Beyond local Kind testing, this project also supports a full **AWS DevSecOps pipeline**:
+
+- **ECR** — private container registry for the app image
+- **EC2 (App Tier)** — runs the app + MySQL via Docker Compose
+- **EC2 (AI Tier)** — dedicated instance running Ollama
+- **GitHub Actions** — 9-stage security pipeline (secret scan → lint → SAST → SCA → build → container scan → push → deploy → DAST)
+- **AWS Secrets Manager + IAM OIDC** — secure, keyless authentication from CI/CD to AWS
+
+See `.github/workflows/` for the pipeline definition and `app-tier.yml` for the EC2 deployment config.
+
+---
+
+## 12. Quick Glossary (For Beginners)
+
+| Term | Simple Meaning |
+|------|-----------------|
+| **Pod** | The smallest unit in Kubernetes — usually one running container |
+| **Deployment** | Manages a group of identical Pods, handles restarts and updates |
+| **Service** | A stable network address that routes traffic to healthy Pods |
+| **ConfigMap** | Stores plain-text settings (not secret) |
+| **Secret** | Stores sensitive values, base64-encoded |
+| **PV / PVC** | Disk storage reserved for a Pod so data survives restarts |
+| **Namespace** | A logical grouping/isolation boundary inside a cluster |
+| **HPA** | Automatically adds/removes Pods based on load |
+| **NodePort** | Exposes a Service on a fixed port, reachable from outside the cluster |
+| **initContainer** | A setup container that must finish before the main container starts |
 
 ---
 
 <div align="center">
 
-Happy Learning
-
-**TrainWithShubham**  
+Built with Java 21 · Spring Boot 3.4.1 · MySQL 8.0 · Ollama (TinyLlama) · Kubernetes · Docker
 
 </div>
