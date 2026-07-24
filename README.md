@@ -160,14 +160,14 @@ nodes:
 
 ```bash
 # ── 1. Build the app image ──────────────────────────────
-docker build -t trainwithshubham/bankapp:k8s .
+docker build -t nasirbloch323/bankapp: v1
 
 # ── 2. Create the local Kind cluster ────────────────────
 kind create cluster --config setup-k8s/kind-config.yml
 
 # ── 3. Load the image into the cluster ──────────────────
 # (Kind can't see your local Docker images automatically)
-kind load docker-image trainwithshubham/bankapp:k8s --name tws-cluster
+kind load docker-image nasirbloch323/bankapp:k8s --name tws-cluster
 
 # ── 4. Install metrics-server (required for autoscaling) ─
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
