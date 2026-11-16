@@ -34,3 +34,13 @@ build/
 
 ### Claude ###
 CLAUDE.md
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+secrets.json
+
+# Private keys and certificates
+*.pem
+*.key
