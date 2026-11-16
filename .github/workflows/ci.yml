@@ -101,7 +101,7 @@ jobs:
             exit 1
           fi
 
-          mvn org.owasp:dependency-check-maven:13.0.0:check \
+          mvn -e org.owasp:dependency-check-maven:13.0.0:check \
             -DfailBuildOnCVSS=7 \
             -DnvdApiKeyEnvironmentVariable=NVD_API_KEY \
             -DsuppressionFile=suppression.xml
@@ -112,3 +112,4 @@ jobs:
         with:
           name: owasp-dependency-check-report
           path: target/dependency-check-report.html
+
