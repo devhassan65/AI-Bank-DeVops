@@ -1,3 +1,4 @@
+
 name: CI - Security Scanning
 
 on:
@@ -19,7 +20,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Gitleaks needs full history to scan all commits
+          fetch-depth: 0
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
@@ -44,7 +45,7 @@ jobs:
           cache: maven
 
       - name: Run Checkstyle
-        run: mvn checkstyle:check || true # Audit mode for now to avoid blocking on style
+        run: mvn checkstyle:check || true
 
   # ============================================================
   # GATE 3: SAST - Static Application Security Testing
@@ -91,7 +92,6 @@ jobs:
           restore-keys: |
             owasp-nvd-${{ runner.os }}-
 
-     
       - name: Run OWASP Dependency Check
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
@@ -101,8 +101,14 @@ jobs:
             exit 1
           fi
 
-          mvn org.owasp:dependency-check-maven:check \
+          mvn org.owasp:dependency-check-maven:13.0.0:check \
             -DfailBuildOnCVSS=7 \
             -DnvdApiKey="$NVD_API_KEY" \
             -DsuppressionFile=suppression.xml
 
+      - name: Upload Dependency Check Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: owasp-dependency-check-report
+          path: target/dependency-check-report.html
