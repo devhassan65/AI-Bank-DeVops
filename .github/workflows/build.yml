@@ -1,17 +1,14 @@
+
 name: Build - Container Build & Push
 
 on:
   workflow_call:
 
 permissions:
-  id-token: write  # Required for OIDC
   contents: read
 
 jobs:
-
-  # ============================================================
   # GATE 5: BUILD
-  # ============================================================
   build:
     name: Build & Package
     runs-on: ubuntu-latest
@@ -35,9 +32,7 @@ jobs:
           name: app-jar
           path: target/*.jar
 
-  # ============================================================
   # GATE 6: CONTAINER IMAGE SCAN - Trivy
-  # ============================================================
   image_scan:
     name: Container Scan - Trivy
     runs-on: ubuntu-latest
@@ -62,7 +57,7 @@ jobs:
         with:
           image-ref: bankapp:scan-${{ github.sha }}
           format: 'table'
-          exit-code: '1'         # Enforce: fail pipeline on CRITICAL/HIGH findings
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
@@ -76,9 +71,7 @@ jobs:
           name: trivy-scan-report
           path: trivy-report.txt
 
-  # ============================================================
   # GATE 7: PUSH TO ECR
-  # ============================================================
   push_to_ecr:
     name: Push to ECR
     runs-on: ubuntu-latest
@@ -87,10 +80,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials (OIDC)
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -105,3 +99,4 @@ jobs:
         run: |
           docker build --pull -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
